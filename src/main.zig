@@ -1,46 +1,36 @@
-//! By convention, main.zig is where your main function lives in the case that
-//! you are building an executable. If you are making a library, the convention
-//! is to delete this file and start with root.zig instead.
-
-pub fn main() !void {
-    // Prints to stderr (it's a shortcut based on `std.io.getStdErr()`)
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
-
-    // stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    const stdout_file = std.io.getStdOut().writer();
-    var bw = std.io.bufferedWriter(stdout_file);
-    const stdout = bw.writer();
-
-    try stdout.print("Run `zig build test` to run the tests.\n", .{});
-
-    try bw.flush(); // Don't forget to flush!
-}
-
-test "simple test" {
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    defer list.deinit(); // Try commenting this out and see if zig detects the memory leak!
-    try list.append(42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
-}
-
-test "use other module" {
-    try std.testing.expectEqual(@as(i32, 150), lib.add(100, 50));
-}
-
-test "fuzz example" {
-    const Context = struct {
-        fn testOne(context: @This(), input: []const u8) anyerror!void {
-            _ = context;
-            // Try passing `--fuzz` to `zig build test` and see if it manages to fail this test case!
-            try std.testing.expect(!std.mem.eql(u8, "canyoufindme", input));
-        }
-    };
-    try std.testing.fuzz(Context{}, Context.testOne, .{});
-}
-
 const std = @import("std");
 
-/// This imports the separate module containing `root.zig`. Take a look in `build.zig` for details.
-const lib = @import("ztop_lib");
+pub fn main() !void {
+    const meminfo = try std.fs.openFileAbsolute("/proc/meminfo", .{});
+    defer meminfo.close();
+
+    var total: u64 = 0;
+    var free: u64 = 0;
+    var buf: [128]u8 = undefined;
+    var found = @as(u2, 0b00);
+
+    var reader = meminfo.reader();
+    while (found != 0b11) {
+        const line = (try reader.readUntilDelimiterOrEof(&buf, '\n')) orelse break;
+        if (std.mem.startsWith(u8, line, "MemTotal:")) {
+            total = try parseMemLine(line);
+            found |= 0b01;
+        } else if (std.mem.startsWith(u8, line, "MemAvailable:")) {
+            free = try parseMemLine(line);
+            found |= 0b10;
+        }
+    }
+
+    const stdout = std.io.getStdOut().writer();
+    try stdout.print("Total: {d:.1} GB\nUsed: {d:.1} GB\nFree: {d:.1} GB\n", .{
+        @as(f64, @floatFromInt(total)) / 1048576.0,
+        @as(f64, @floatFromInt(total - free)) / 1048576.0,
+        @as(f64, @floatFromInt(free)) / 1048576.0,
+    });
+}
+
+fn parseMemLine(line: []const u8) !u64 {
+    var tokens = std.mem.tokenizeAny(u8, line, " ");
+    _ = tokens.next(); // Skip label
+    return std.fmt.parseInt(u64, tokens.next() orelse return error.InvalidFormat, 10);
+}
